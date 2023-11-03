@@ -46,6 +46,11 @@ int fail_on_all_faults = 0;
 uint64_t lastTime = 0;
 struct MiniRV32IMAState *core;
 
+// variables for debugging
+const int INPUT_LEN = 8;
+char* input_buf;
+int input_buf_pos = 0;
+
 /*
  * Some notes about this stupid cache system
  * We are running on Arduino UNO, which uses atmega328p and only has 2KB of RAM
@@ -111,6 +116,10 @@ static UInt8 load1(UInt32 ofs);
 
 static UInt32 loadi(UInt32 ofs);
 
+static void step(UInt8 instrs);
+static int debug(void);
+static UInt32 hex2int(char *hex);
+
 // Other
 extern int __heap_start;
 extern int *__brkval;
@@ -153,7 +162,7 @@ const UInt32 RAM_SIZE = 16777216UL; // Minimum RAM amount (in bytes), just teste
 // millis implementation from https://gist.github.com/adnbr/2439125
 volatile unsigned long timer1_millis;
 unsigned long last_ms = 0;
- 
+
 ISR (TIMER1_COMPA_vect) {
     timer1_millis++;
 }
@@ -212,7 +221,7 @@ int main(void) {
     // Initialize SD card
     if(SD_init() != SD_SUCCESS)
     {
-        UART_pputs("Error initializaing SD card\r\n");
+        UART_pputs("Error initializing SD card\r\n");
         while(1); // Deadloop
     }
 
@@ -221,6 +230,9 @@ int main(void) {
     // Initialize emulator struct
     core = (struct MiniRV32IMAState *)malloc(sizeof(struct MiniRV32IMAState));
     memset(core, 0, sizeof(struct MiniRV32IMAState));
+
+    input_buf = (char*) malloc((INPUT_LEN+1)*sizeof(char));
+    memset(input_buf, 0, INPUT_LEN+1);
 
     // Setup core
     core->pc = MINIRV32_RAM_IMAGE_OFFSET;
@@ -234,7 +246,7 @@ int main(void) {
 
     // Init cache1 as dcache
     init_cache(1, 6552, 0); // buf = second accessed address (got by dumping address)
-    
+
     // Init cache2 as dcache
     init_cache(2, 3011, 0); // buf = third accessed address (got by dumping address)
 
@@ -297,37 +309,90 @@ int main(void) {
             dump_state();
             UART_pputs("Dump completed. Emulator will continue when B1 is set back to HIGH\r\n");
 
+            input_buf_pos = 0;
             // Wait until B1 is set back to HIGH
-            while (!(PINB & (1 << PINB1)));
+            while (!(PINB & (1 << PINB1))) {
+                debug();
+            };
             UART_pputs("B1 is set to HIGH, emulator resume\r\n");
-            
+
             // Reset counters
             last_cyclel = core->cyclel;
             last_ms = millis();
         }
 
-        // Calculate pseudo time
-        uint64_t * this_ccount = ((uint64_t*)&core->cyclel);
-        UInt32 elapsedUs = 0;
-        elapsedUs = *this_ccount / TIME_DIVISOR - lastTime;
-        lastTime += elapsedUs;
-
-        int ret = MiniRV32IMAStep( core, NULL, 0, elapsedUs, INSTRS_PER_FLIP ); // Execute upto INSTRS_PER_FLIP cycles before breaking out.
-        switch( ret )
-        {
-            case 0: break;
-            case 1: _delay_ms(1); *this_ccount += INSTRS_PER_FLIP; break;
-            //case 3: instct = 0; break;
-            //case 0x7777: goto restart;  //syscon code for restart
-            case 0x5555: UART_pputs("POWEROFF\r\n"); while(1); //syscon code for power-off . halt
-            default: UART_pputs("Unknown failure\r\n"); break;
-        }
+        step(INSTRS_PER_FLIP);
     } while (1);
 
     // Should not get here
     while(1);
 }
 
+void step(UInt8 instrs) {
+    // Calculate pseudo time
+    uint64_t * this_ccount = ((uint64_t*)&core->cyclel);
+    UInt32 elapsedUs = 0;
+    elapsedUs = *this_ccount / TIME_DIVISOR - lastTime;
+    lastTime += elapsedUs;
+
+    int ret = MiniRV32IMAStep( core, NULL, 0, elapsedUs, instrs ); // Execute upto INSTRS_PER_FLIP cycles before breaking out.
+    switch( ret )
+    {
+        case 0: break;
+        case 1: _delay_ms(1); *this_ccount += instrs; break;
+        //case 3: instct = 0; break;
+        case 4: {
+            UART_pputs("TRAP at 0x80001CBC!!!");
+            dump_state();
+            int r = 0;
+            input_buf_pos = 0;
+            while(r == 0) {
+                r = debug();
+            }
+        };break;
+        //case 0x7777: goto restart;  //syscon code for restart
+        case 0x5555: UART_pputs("POWEROFF\r\n"); while(1); //syscon code for power-off . halt
+        default: UART_pputs("Unknown failure\r\n"); break;
+    }
+}
+
+int debug(void) {
+    if(UART_available()) {
+        unsigned char c = UART_getc();
+        if (input_buf_pos == 0) {
+            if (c == 's') { // step
+                UART_pputs("STEP\r\n");
+                step(1);
+                dump_state();
+            } else if (c == 'a') { // get memory value
+                UART_pputs("Enter address: 0x");
+                input_buf_pos++;
+            } else if (c == 'c') {
+                UART_pputs("CONTINUE\r\n");
+                return 1;
+            }
+        } else if (c == '\n' || c == '\r') {
+                UInt32 addr = hex2int(input_buf);
+                UInt32 val = load4(addr - MINIRV32_RAM_IMAGE_OFFSET);
+
+                UART_pputs("\r\nValue at address ");
+                UART_puthex32(addr);
+                UART_pputs(" is: ");
+                UART_puthex32(val);
+                UART_pputs("\r\n");
+
+                input_buf_pos = 0;
+        } else if (0 < input_buf_pos && input_buf_pos <= INPUT_LEN) {
+            UART_putc(c);
+            input_buf[input_buf_pos-1] = c;
+            input_buf_pos++;
+        } else if (input_buf_pos > INPUT_LEN) {
+            input_buf_pos = 0;
+            UART_pputs("\r\nCould not read address. Start again: s = step; a = get value at address; c = continue\r\n");
+        }
+    }
+    return 0;
+}
 // Exception handlers
 static uint32_t HandleException( uint32_t ir, uint32_t code )
 {
@@ -337,6 +402,25 @@ static uint32_t HandleException( uint32_t ir, uint32_t code )
 		// Could handle other opcodes here.
 	}
 	return code;
+}
+
+/**
+ * hex2int
+ * take a hex string and convert it to a 32bit number (max 8 hex digits)
+ */
+UInt32 hex2int(char *hex) {
+    UInt32 val = 0;
+    while (*hex) {
+        // get current character then increment
+        char byte = *hex++;
+        // transform hex character to the 4bit equivalent number, using the ascii table indexes
+        if (byte >= '0' && byte <= '9') byte = byte - '0';
+        else if (byte >= 'a' && byte <='f') byte = byte - 'a' + 10;
+        else if (byte >= 'A' && byte <='F') byte = byte - 'A' + 10;
+        // shift 4 to make space for new digit, and add the 4 bits of the new digit
+        val = (val << 4) | (byte & 0xF);
+    }
+    return val;
 }
 
 static uint32_t HandleControlStore( uint32_t addy, uint32_t val )
@@ -513,7 +597,7 @@ cache_write:
             dcache_miss++;
 #endif
         }
-        
+
         // Fetch new sector into cache
         UInt8 t = 0;
 cache_read:
@@ -642,7 +726,7 @@ static UInt16 load2(UInt32 ofs) {
         // MSB located in n + 1 sector
         id = read_buf(ofs, 1);
         ((UInt8 *)&result)[1] = pool[id].buf[0];
-        
+
         // Increase age score
         addage(id, 2);
 
@@ -651,7 +735,7 @@ static UInt16 load2(UInt32 ofs) {
 
     ((UInt8 *)&result)[0] = pool[id].buf[r];     // LSB
     ((UInt8 *)&result)[1] = pool[id].buf[r + 1]; // MSB
-    
+
     // Increase age score
     addage(id, 2);
 
@@ -702,7 +786,7 @@ static UInt32 store4(UInt32 ofs, UInt32 val) {
     pool[id].buf[r + 1] = ((UInt8 *)&val)[1];
     pool[id].buf[r + 2] = ((UInt8 *)&val)[2];
     pool[id].buf[r + 3] = ((UInt8 *)&val)[3]; // MSB
-    
+
     // Set "dirty" flag
     pool[id].flag = 1;
 
@@ -727,7 +811,7 @@ static UInt16 store2(UInt32 ofs, UInt16 val) {
         // MSB located in the n + 1 sector
         id = read_buf(ofs, 1);
         pool[id].buf[0] = ((UInt8 *)&val)[1];
-        
+
         // Set "dirty" flag
         pool[id].flag = 1;
 
@@ -740,7 +824,7 @@ static UInt16 store2(UInt32 ofs, UInt16 val) {
 
     pool[id].buf[r]     = ((UInt8 *)&val)[0]; // LSB
     pool[id].buf[r + 1] = ((UInt8 *)&val)[1]; // MSB
-    
+
     // Set "dirty" flag
     pool[id].flag = 1;
 
@@ -754,7 +838,7 @@ static UInt16 store2(UInt32 ofs, UInt16 val) {
 static UInt8 store1(UInt32 ofs, UInt8 val) {
     UInt8 id = read_buf(ofs, 0);
     pool[id].buf[ofs % 512] = val;
-    
+
     // Set "dirty" flag
     pool[id].flag = 1;
 

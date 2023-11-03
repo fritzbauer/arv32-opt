@@ -331,7 +331,7 @@ MINIRV32_STEPPROTO
 					{
 						switch( (ir>>12)&7 ) // These could be either op-immediate or op commands.  Be careful.
 						{
-							case 0: rval = (is_reg && (ir & 0x40000000) ) ? ( rs1 - rs2 ) : ( rs1 + rs2 ); break; 
+							case 0: rval = (is_reg && (ir & 0x40000000) ) ? ( rs1 - rs2 ) : ( rs1 + rs2 ); break;
 							case 1: rval = rs1 << (rs2 & 0x1F); break;
 							case 2: rval = (int32_t)rs1 < (int32_t)rs2; break;
 							case 3: rval = rs1 < rs2; break;
@@ -510,6 +510,9 @@ MINIRV32_STEPPROTO
 		MINIRV32_POSTEXEC( pc, ir, trap );
 
 		pc += 4;
+		if(pc == 0x80001CBC) {
+			break;
+		}
 	}
 
 	// Handle traps and interrupts.
@@ -542,6 +545,9 @@ MINIRV32_STEPPROTO
 	if( CSR( cyclel ) > cycle ) CSR( cycleh )++;
 	SETCSR( cyclel, cycle );
 	SETCSR( pc, pc );
+	if(pc == 0x80001CBC) {
+		return 4;
+	}
 	return 0;
 }
 

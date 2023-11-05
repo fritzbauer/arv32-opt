@@ -46,11 +46,6 @@ int fail_on_all_faults = 0;
 uint64_t lastTime = 0;
 struct MiniRV32IMAState *core;
 
-// variables for debugging
-const int INPUT_LEN = 8;
-char* input_buf;
-int input_buf_pos = 0;
-
 /*
  * Some notes about this stupid cache system
  * We are running on Arduino UNO, which uses atmega328p and only has 2KB of RAM
@@ -119,6 +114,13 @@ static UInt32 loadi(UInt32 ofs);
 static void step(UInt32 instrs);
 static int debug(void);
 static UInt32 hex2int(char *hex);
+static void initSD(void);
+
+// variables for debugging
+const int INPUT_LEN = 8;
+char* input_buf;
+int input_buf_pos = 0;
+
 
 // Other
 extern int __heap_start;
@@ -135,9 +137,7 @@ const UInt32 RAM_SIZE = 16777216UL; // Minimum RAM amount (in bytes), just teste
 // Setup mini-rv32ima
 // This is the functionality we want to override in the emulator.
 // think of this as the way the emulator's processor is connected to the outside world.
-//#define MINIRV32BREAK 0x80187284 // clint_timer_init_dt l.192
-#define MINIRV32BREAK(pc) (pc == 0x801870f4 || pc ==  0x80001CBC || pc == 0x8016D79C || pc == 0x80178944)// clint_timer_init_dt l.0
-//#define MINIRV32BREAK 0x80001CBC
+//#define MINIRV32BREAK(pc) (pc == 0x801870f4 || pc ==  0x80001CBC || pc == 0x8016D79C || pc == 0x80178944)// clint_timer_init_dt l.0
 #define MINIRV32WARN( x... ) UART_pputs( x );
 #define MINIRV32_DECORATE  static
 #define MINI_RV32_RAM_SIZE RAM_SIZE
@@ -197,7 +197,7 @@ read_init_begin:
             UART_pputs(" error, error token:\r\n");
             SD_printDataErrToken(token);
             UART_pputs("init_cache: failed 10 times in a row. Reinitializing SD.\r\n");
-            initSd();
+            initSD();
             t = 0;
         }
 
@@ -211,8 +211,7 @@ read_init_begin:
     pool[index].flag = 0;
 }
 
-void initSd(void);
-void initSd(void) {
+void initSD(void) {
     // Initialize SPI
     SPI_init(SPI_MASTER | SPI_FOSC_16 | SPI_MODE_0);
     _delay_ms(100);
@@ -236,7 +235,7 @@ int main(void) {
     // Say something, so people know that UART works
     UART_pputs("arv32-opt: mini-rv32ima on Arduino UNO\r\n");
 
-    initSd();
+    initSD();
 
     // Initialize emulator struct
     core = (struct MiniRV32IMAState *)malloc(sizeof(struct MiniRV32IMAState));
@@ -248,7 +247,8 @@ int main(void) {
     // Setup core
     core->pc = MINIRV32_RAM_IMAGE_OFFSET;
     core->regs[10] = 0x00; //hart ID
-    core->regs[11] = RAM_SIZE - sizeof(struct MiniRV32IMAState) - DTB_SIZE + MINIRV32_RAM_IMAGE_OFFSET; // dtb_pa (Must be valid pointer) (Should be pointer to dtb)
+    // was: 0x80FFF93C should be: 0x80FFF940 - do not know why
+    core->regs[11] = RAM_SIZE - sizeof(struct MiniRV32IMAState) - DTB_SIZE + MINIRV32_RAM_IMAGE_OFFSET + 4; // dtb_pa (Must be valid pointer) (Should be pointer to dtb)
     core->extraflags |= 3; // Machine-mode.
 
     // Setup cache
@@ -321,6 +321,7 @@ int main(void) {
             UART_pputs("Dump completed. Emulator will continue when B1 is set back to HIGH\r\n");
 
             input_buf_pos = 0;
+            UART_pputs("Debugger: s = step; a = get value at address\r\n");
             // Wait until B1 is set back to HIGH
             while (!(PINB & (1 << PINB1))) {
                 debug();
@@ -353,11 +354,12 @@ void step(UInt32 instrs) {
         case 1: _delay_ms(1); *this_ccount += instrs; break;
         //case 3: instct = 0; break;
         case 4: {
-            UART_pputs("TRAP at ");
-            UART_puthex32(core->pc);
             dump_state();
+            UART_pputs("Hit breakpoint at ");
+            UART_puthex32(core->pc);
             int r = 0;
             input_buf_pos = 0;
+            UART_pputs("Debugger: s = step; a = get value at address; c = continue\r\n");
             while(r == 0) {
                 r = debug();
             }
@@ -400,7 +402,7 @@ int debug(void) {
             input_buf_pos++;
         } else if (input_buf_pos > INPUT_LEN) {
             input_buf_pos = 0;
-            UART_pputs("\r\nCould not read address. Start again: s = step; a = get value at address; c = continue\r\n");
+            UART_pputs("\r\nCould not read address. Enter command again.\r\n");
         }
     }
     return 0;
@@ -580,9 +582,9 @@ cache_write:
                         UART_puthex32(pool[lru].tag);
                         UART_pputs(" error, error token:\r\n");
                         SD_printDataErrToken(token);
-                        dump_state();
+                        //dump_state();
                         UART_pputs("cache_write: failed 10 times in a row. Reinitializing SD.\r\n");
-                        initSd();
+                        initSD();
                         t = 0;
                     }
 
@@ -622,9 +624,9 @@ cache_read:
                     UART_puthex32(s);
                     UART_pputs(" error, error token:\r\n");
                     SD_printDataErrToken(token);
-                    dump_state();
+                    //dump_state();
                     UART_pputs("cache_read: failed 10 times in a row. Reinitializing SD.\r\n");
-                    initSd();
+                    initSD();
                     t = 0;
                 }
 
@@ -878,8 +880,6 @@ void dump_state(void) {
 
     UART_pputs("pc: ");
     UART_puthex32(core->pc);
-    UART_pputs("\r\nppc: ");
-    UART_puthex32(core->ppc);
     UART_pputs("\r\nmstatus: ");
     UART_puthex32(core->mstatus);
     UART_pputs("\r\ncyclel: ");

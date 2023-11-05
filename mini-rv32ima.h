@@ -77,7 +77,6 @@ struct MiniRV32IMAState
 	uint32_t regs[32];
 
 	uint32_t pc;
-	uint32_t ppc;
 	uint32_t mstatus;
 	uint32_t cyclel;
 	uint32_t cycleh;
@@ -157,7 +156,6 @@ MINIRV32_STEPPROTO
 		rval = 0;
 		cycle++;
 		uint32_t ofs_pc = pc - MINIRV32_RAM_IMAGE_OFFSET;
-		SETCSR(ppc, pc);
 
 		if( ofs_pc >= MINI_RV32_RAM_SIZE )
 		{

@@ -21,6 +21,10 @@
 		* Feel free to override any of the functionality with macros.
 */
 
+#ifndef MINIRV32BREAK
+	#define MINIRV32BREAK(pc) (1 == 0)
+#endif
+
 #ifndef MINIRV32WARN
 	#define MINIRV32WARN( x... );
 #endif
@@ -73,6 +77,7 @@ struct MiniRV32IMAState
 	uint32_t regs[32];
 
 	uint32_t pc;
+	uint32_t ppc;
 	uint32_t mstatus;
 	uint32_t cyclel;
 	uint32_t cycleh;
@@ -152,6 +157,7 @@ MINIRV32_STEPPROTO
 		rval = 0;
 		cycle++;
 		uint32_t ofs_pc = pc - MINIRV32_RAM_IMAGE_OFFSET;
+		SETCSR(ppc, pc);
 
 		if( ofs_pc >= MINI_RV32_RAM_SIZE )
 		{
@@ -510,7 +516,7 @@ MINIRV32_STEPPROTO
 		MINIRV32_POSTEXEC( pc, ir, trap );
 
 		pc += 4;
-		if(pc == 0x80001CBC) {
+		if MINIRV32BREAK(pc) {
 			break;
 		}
 	}
@@ -545,7 +551,7 @@ MINIRV32_STEPPROTO
 	if( CSR( cyclel ) > cycle ) CSR( cycleh )++;
 	SETCSR( cyclel, cycle );
 	SETCSR( pc, pc );
-	if(pc == 0x80001CBC) {
+	if MINIRV32BREAK(pc) {
 		return 4;
 	}
 	return 0;

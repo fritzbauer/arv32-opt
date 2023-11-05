@@ -116,7 +116,7 @@ static UInt8 load1(UInt32 ofs);
 
 static UInt32 loadi(UInt32 ofs);
 
-static void step(UInt8 instrs);
+static void step(UInt32 instrs);
 static int debug(void);
 static UInt32 hex2int(char *hex);
 
@@ -135,6 +135,9 @@ const UInt32 RAM_SIZE = 16777216UL; // Minimum RAM amount (in bytes), just teste
 // Setup mini-rv32ima
 // This is the functionality we want to override in the emulator.
 // think of this as the way the emulator's processor is connected to the outside world.
+//#define MINIRV32BREAK 0x80187284 // clint_timer_init_dt l.192
+#define MINIRV32BREAK(pc) (pc == 0x801870f4 || pc ==  0x80001CBC || pc == 0x8016D79C || pc == 0x80178944)// clint_timer_init_dt l.0
+//#define MINIRV32BREAK 0x80001CBC
 #define MINIRV32WARN( x... ) UART_pputs( x );
 #define MINIRV32_DECORATE  static
 #define MINI_RV32_RAM_SIZE RAM_SIZE
@@ -193,8 +196,9 @@ read_init_begin:
             UART_puthex32(index);
             UART_pputs(" error, error token:\r\n");
             SD_printDataErrToken(token);
-            UART_pputs("init_cache: failed 10 times in a row. Halting\r\n");
-            while(1); // Halt
+            UART_pputs("init_cache: failed 10 times in a row. Reinitializing SD.\r\n");
+            initSd();
+            t = 0;
         }
 
         _delay_ms(100);
@@ -207,6 +211,23 @@ read_init_begin:
     pool[index].flag = 0;
 }
 
+void initSd(void);
+void initSd(void) {
+    // Initialize SPI
+    SPI_init(SPI_MASTER | SPI_FOSC_16 | SPI_MODE_0);
+    _delay_ms(100);
+    // Initialize SD card
+    while(SD_init() != SD_SUCCESS)
+    {
+        _delay_ms(100);
+        SPI_init(SPI_MASTER | SPI_FOSC_16 | SPI_MODE_0);
+        UART_pputs("Error initializing SD card\r\n");
+        _delay_ms(1000);
+        //while(1); // Deadloop
+    }
+    UART_pputs("SD card initialized successfully!\r\n");
+}
+
 // Entry point
 int main(void) {
     // Initialize UART
@@ -215,17 +236,7 @@ int main(void) {
     // Say something, so people know that UART works
     UART_pputs("arv32-opt: mini-rv32ima on Arduino UNO\r\n");
 
-    // Initialize SPI
-    SPI_init(SPI_MASTER | SPI_FOSC_16 | SPI_MODE_0);
-
-    // Initialize SD card
-    if(SD_init() != SD_SUCCESS)
-    {
-        UART_pputs("Error initializing SD card\r\n");
-        while(1); // Deadloop
-    }
-
-    UART_pputs("SD card initialized successfully!\r\n");
+    initSd();
 
     // Initialize emulator struct
     core = (struct MiniRV32IMAState *)malloc(sizeof(struct MiniRV32IMAState));
@@ -328,7 +339,7 @@ int main(void) {
     while(1);
 }
 
-void step(UInt8 instrs) {
+void step(UInt32 instrs) {
     // Calculate pseudo time
     uint64_t * this_ccount = ((uint64_t*)&core->cyclel);
     UInt32 elapsedUs = 0;
@@ -342,7 +353,8 @@ void step(UInt8 instrs) {
         case 1: _delay_ms(1); *this_ccount += instrs; break;
         //case 3: instct = 0; break;
         case 4: {
-            UART_pputs("TRAP at 0x80001CBC!!!");
+            UART_pputs("TRAP at ");
+            UART_puthex32(core->pc);
             dump_state();
             int r = 0;
             input_buf_pos = 0;
@@ -569,8 +581,9 @@ cache_write:
                         UART_pputs(" error, error token:\r\n");
                         SD_printDataErrToken(token);
                         dump_state();
-                        UART_pputs("cache_write: failed 10 times in a row. Halting\r\n");
-                        while(1); // Halt
+                        UART_pputs("cache_write: failed 10 times in a row. Reinitializing SD.\r\n");
+                        initSd();
+                        t = 0;
                     }
 
                     _delay_ms(100);
@@ -610,8 +623,9 @@ cache_read:
                     UART_pputs(" error, error token:\r\n");
                     SD_printDataErrToken(token);
                     dump_state();
-                    UART_pputs("cache_read: failed 10 times in a row. Halting\r\n");
-                    while(1); // Halt
+                    UART_pputs("cache_read: failed 10 times in a row. Reinitializing SD.\r\n");
+                    initSd();
+                    t = 0;
                 }
 
                 _delay_ms(100);
@@ -864,6 +878,8 @@ void dump_state(void) {
 
     UART_pputs("pc: ");
     UART_puthex32(core->pc);
+    UART_pputs("\r\nppc: ");
+    UART_puthex32(core->ppc);
     UART_pputs("\r\nmstatus: ");
     UART_puthex32(core->mstatus);
     UART_pputs("\r\ncyclel: ");
